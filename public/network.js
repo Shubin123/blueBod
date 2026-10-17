@@ -5,7 +5,7 @@ export function parsePairing(text){
 }
 export function validPacket(m){
  if(!m||typeof m.packetId!=='string'||m.packetId.length>80||typeof m.id!=='string'||typeof m.time!=='number')return false;
- if(m.type==='pose')return Array.isArray(m.landmarks)&&m.landmarks.length<=33&&m.landmarks.every(p=>p&&['x','y','z'].every(k=>Number.isFinite(p[k])));
+ if(m.type==='pose')return (m.worldLandmarks===undefined||(Array.isArray(m.worldLandmarks)&&m.worldLandmarks.length<=33&&m.worldLandmarks.every(p=>p&&['x','y','z'].every(k=>Number.isFinite(p[k])))))&&Array.isArray(m.landmarks)&&m.landmarks.length<=33&&m.landmarks.every(p=>p&&['x','y','z'].every(k=>Number.isFinite(p[k])));
  if(m.type==='sensor')return typeof m.name==='string'&&Array.isArray(m.bytes)&&m.bytes.length<=512&&m.bytes.every(n=>Number.isInteger(n)&&n>=0&&n<=255);
  return m.type==='hello'&&typeof m.name==='string'&&m.name.length<=40;
 }

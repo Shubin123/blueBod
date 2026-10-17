@@ -33,7 +33,9 @@ Use a supported browser/platform with Web Bluetooth, such as Chrome on supported
 
 ## Capture and export
 
-Start the camera for 33-landmark MediaPipe Pose Landmarker Lite inference. Demo mode is synthetic and excluded from transmission/exports. JSON export retains the latest 18,000 records in browser memory, including device IDs and source-device timestamps. Timestamps are not synchronized between devices. Camera coordinates are per view; no calibrated multi-view fusion or accuracy gain is claimed. Accuracy fusion needs camera calibration, synchronization and triangulation. Reloading clears the session.
+The 3D stick figure appears immediately as a labeled reference pose. Start the camera for 33-landmark MediaPipe Pose Landmarker Lite inference; the figure follows estimated world landmarks with hip-centered coordinates. Drag to orbit, scroll or use +/− to zoom, or select Front/Side/Reset view. Keyboard arrows rotate the focused canvas. Low-visibility limbs are hidden, and tracking loss marks the last pose as stale. Local and remote streams include world landmarks in exports; older peers fall back to approximate normalized depth.
+
+Start the camera to begin live tracking. Demo mode is synthetic and excluded from transmission/exports. JSON export retains the latest 18,000 records in browser memory, including device IDs and source-device timestamps. Timestamps are not synchronized between devices. Camera coordinates are per view; no calibrated multi-view fusion or accuracy gain is claimed. Accuracy fusion needs camera calibration, synchronization and triangulation. Reloading clears the session.
 
 ## Checks
 
