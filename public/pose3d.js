@@ -31,7 +31,8 @@ export class Pose3D{
  canvas.addEventListener('keydown',e=>{if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','-'].includes(e.key)){e.preventDefault();if(e.key==='ArrowLeft')this.yaw-=.12;if(e.key==='ArrowRight')this.yaw+=.12;if(e.key==='ArrowUp')this.pitch=Math.max(-1.1,this.pitch-.1);if(e.key==='ArrowDown')this.pitch=Math.min(1.1,this.pitch+.1);if(e.key==='+')this.zoom(-.2);if(e.key==='-')this.zoom(.2);this.dirty=true;}});
  const animate=()=>{if(this.mode==='live'&&performance.now()-this.updated>1200){this.mode='stale';this.label.textContent='Tracking lost · last estimated pose';this.dirty=true;}if(this.dirty&&!document.hidden){this.render();this.dirty=false;}this.frame=requestAnimationFrame(animate);};animate();
  }
- update(points,{world=true,aspect=1,mode='live'}={}){if(!points?.length)return;this.points=toScene(points,world,aspect);this.mode=mode;this.updated=performance.now();this.label.textContent=mode==='demo'?'Demo · synthetic movement':mode==='reference'?'Reference figure · start camera to track':world?'Live · estimated 3D pose':'Live · approximate depth (older peer)';this.dirty=true;}
+ update(points,{world=true,aspect=1,mode='live',label}={}){if(!points?.length)return;this.points=toScene(points,world,aspect);this.mode=mode;this.updated=performance.now();this.label.textContent=label||(mode==='demo'?'Demo · synthetic movement':mode==='reference'?'Reference figure · connect a WiFi sensor to track':world?'Live · estimated 3D pose':'Live · approximate depth (older peer)');this.dirty=true;}
+ clear(label){this.points=[];this.mode='empty';this.label.textContent=label;this.dirty=true;}
  reset(){this.update(referencePose(),{mode:'reference'});}
  view(yaw=-.35,pitch=.12){this.yaw=yaw;this.pitch=pitch;this.distance=3.5;this.dirty=true;}
  zoom(amount){this.distance=Math.max(2,Math.min(7,this.distance+amount));this.dirty=true;}
