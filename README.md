@@ -1,6 +1,6 @@
 # BlueBod
 
-A fully static browser app that senses body movement using **one device's own radios**: no camera, no ESP32 boards, no pairing. Open the page, press **Start sensing**, and teach it a few movements. It then estimates them from radio alone and drives a 3D stick figure with the result. No server, signaling service or runtime Node process is needed once built.
+A fully static browser app that senses body movement using **one device's own radios**: no ESP32 boards, no pairing, and no camera for tracking. Open the page, press **Start sensing**, and teach it a few movements. It then estimates them from radio alone and drives a 3D stick figure with the result. An optional camera teacher (MediaPipe Pose) can make training better, but tracking never uses it. No server, signaling service or runtime Node process is needed once built.
 
 ## How it senses
 
@@ -13,7 +13,7 @@ A fully static browser app that senses body movement using **one device's own ra
 - **Not yet validated with a moving person.** In development the probe ran against a real home router from desktop Chrome. It found the router automatically and timed 9–11 probes/s at 30–90 ms; that router rate-limits with `503` replies, which still time the link. A full training round, model and live estimate ran on that real data. Whether movement separates from stillness on real links has not been measured yet.
 - **The router's web server adds its own delay and jitter.** The model learns whatever stays consistent.
 - **Locked to the setup.** Move this device or the router, change rooms, or add a person, and you need to retrain.
-- The 3D figure shows an animated template of the predicted movement, not a measured skeleton.
+- The 3D figure shows an animated template of the predicted movement, or, if the camera teacher was on during training, the camera-recorded motion of the closest training window. Either way it's the movement the radio recognised, not a skeleton measured live.
 
 ## Browser support
 
@@ -31,6 +31,17 @@ A fully static browser app that senses body movement using **one device's own ra
 
 Training data is stored in this browser (IndexedDB). **Save / Load training data** moves it as JSON.
 
+### Optional camera teacher
+
+A camera is never needed for tracking. Turn on **Camera teacher** while you record and MediaPipe Pose Landmarker runs on this device (GPU where available, heavy model by default, full model if heavy is too slow); video never leaves the page. The teacher:
+
+- **Saves your 3D motion with each window.** Over each 3 s window it keeps the camera's world landmarks (metres, hip-centred) as 12 frames, 0.25 s apart, for the 17 joints the figure draws. A frame only counts when shoulders and hips are clearly seen, and a window only gets motion if most of its frames did.
+- **Checks the prompts.** A *Nobody* window is dropped if the camera still sees someone in it.
+- **Gives the radio a body to show.** Live, the figure replays the taught motion of the closest training window for the recognised movement. It's whole recorded motion; averaging several windows would blur it into a stiff pose.
+- **Scores the radio's posture.** With the camera on during the test round, the score adds the per-joint distance between the radio's chosen posture and the camera's, next to the error of always guessing the average taught posture. If the radio doesn't beat that baseline, its posture isn't telling you anything.
+
+Stand where the camera sees your whole body. Turn the camera off once training is done; live tracking is radio-only either way.
+
 ## Pipeline
 
 Every 0.5 s, over the last 3 s:
@@ -42,7 +53,7 @@ The features are standardised, and a k-nearest-neighbour model (k = 7) votes on 
 
 ## Privacy
 
-Radio passes through walls. Only sense spaces and people who know about it. The router requests carry no data and their responses are ignored. Nothing is uploaded: processing, training data and exports stay on this device.
+Radio passes through walls. Only sense spaces and people who know about it. The router requests carry no data and their responses are ignored. Camera video is processed in the page and never stored or sent; only the landmarks of recorded windows are kept, in your training data. Nothing is uploaded: processing, training data and exports stay on this device.
 
 ## Build and deploy
 
@@ -52,8 +63,8 @@ npm test
 npm run build
 ```
 
-There are no runtime dependencies; `dist/` is a copy of `public/`. For a local preview, run `npm start` (Python 3) and open http://localhost:3000. `.github/workflows/pages.yml` tests, builds and deploys to GitHub Pages on every push to `main`.
+The build copies `public/` to `dist/` with MediaPipe's runtime and downloads the full and heavy pose models (about 40 MB, loaded only when the camera teacher starts). For a local preview, run `npm start` (Python 3) and open http://localhost:3000. `.github/workflows/pages.yml` tests, builds and deploys to GitHub Pages on every push to `main`.
 
-Tests cover router discovery and probe timing (with a mocked `fetch`), WiFi and Bluetooth features, source handling, k-NN training and honest scoring on synthetic link timing, movement templates and the 3D renderer.
+Tests cover router discovery and probe timing (with a mocked `fetch`), WiFi and Bluetooth features, source handling, k-NN training and honest scoring on synthetic link timing, the camera teacher's frame gating, window resampling, motion replay and posture scoring, movement templates and the 3D renderer. The camera teacher has also run end to end in headless Chrome on a still photo of a person (heavy model, 30 FPS); it hasn't been tried with a person actually moving.
 
-The earlier ESP32 CSI version, with USB/Bluetooth boards, LAN pairing and a camera teacher, is in git history at `681128b`.
+The earlier ESP32 CSI version, with USB/Bluetooth boards and LAN pairing, is in git history at `681128b`.

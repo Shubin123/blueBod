@@ -2,6 +2,7 @@ import {Pose3D} from './pose3d.js';
 import {ROUTERS,WINDOW,FEATURES,SOURCE_NAMES,cleanHost,findRouter,probe,RadioStore} from './radio.js';
 import {fitModel,predict,evaluate,leaveOneRoundOut} from './model.js';
 import {MOVEMENTS,movementName,templatePose} from './movements.js';
+import {STEPS,STEP_MS,compactPose,expandPose,teachWindow,validSequence,poseAt} from './teacher.js';
 const $=id=>document.getElementById(id);
 const store=new RadioStore();
 let records=[],samples=[],sources=null,model=null,recent=[],estimate=null,recorder=null;
@@ -83,7 +84,7 @@ function startRecording(session){
  if(sources&&!sources.every(s=>live.includes(s)))return notice(`The model was trained with ${sourceList(sources)}. Start the same sources, or clear the training data.`);
  if(session==='test'&&!model)return notice('Record a training round first.');
  sources=sources||live;
- recorder={session,round:session==='train'?1+Math.max(0,...samples.filter(s=>s.session==='train').map(s=>s.round)):1,queue,index:-1,phaseStart:0,n:0,missing:0};
+ recorder={session,round:session==='train'?1+Math.max(0,...samples.filter(s=>s.session==='train').map(s=>s.round)):1,queue,index:-1,phaseStart:0,n:0,missing:0,posed:0,rejected:0};
  if(session==='test')samples=samples.filter(s=>s.session!=='test');
  $('record-train').disabled=$('record-test').disabled=true;$('record-stop').disabled=false;nextPhase(now);
 }
@@ -95,7 +96,8 @@ function stopRecording(finished){
  const r=recorder;if(!r)return;recorder=null;window.speechSynthesis?.cancel();
  $('record-train').disabled=$('record-test').disabled=false;$('record-stop').disabled=true;$('prompt-progress').style.width='0';
  $('prompt-text').textContent=finished?`${r.session==='train'?'Training':'Test'} round ${r.round} saved · ${r.n} windows`:'Recording stopped';
- $('prompt-detail').textContent=r.missing?`${r.missing} windows skipped because a source went quiet.`:r.session==='train'?'Record more rounds for a steadier model, then a test round for an honest score.':'Test windows are scored by a model that never saw them.';
+ const taught=[r.posed&&`${r.posed} with camera motion`,r.rejected&&`${r.rejected} "Nobody" windows dropped because the camera saw someone`,r.missing&&`${r.missing} skipped because a source went quiet`].filter(Boolean).join(' · ');
+ $('prompt-detail').textContent=taught||(r.session==='train'?'Record more rounds for a steadier model, then a test round for an honest score.':'Test windows are scored by a model that never saw them.');
  if(finished)speak('Done.');retrain();persist();
 }
 function recordTick(now){
@@ -107,7 +109,10 @@ function recordTick(now){
  // Windows start once a full window lies inside this movement.
  if(elapsed<lead+WINDOW)return;
  const x=store.feature(sources,now);if(!x){r.missing++;return;}
- samples.push({x,y:label,session:r.session,round:r.round});r.n++;
+ // The camera teacher, when on, checks the prompt and attaches the window's 3D motion.
+ let pose;
+ if(cameraOn){const taught=teachWindow(teacherFrames,now);if(label==='nobody'){if(taught.coverage>.2){r.rejected++;return;}}else if(taught.seq){pose=taught.seq;r.posed++;}}
+ samples.push({x,y:label,session:r.session,round:r.round,pose});r.n++;
 }
 $('record-train').onclick=()=>startRecording('train');
 $('record-test').onclick=()=>startRecording('test');
@@ -118,13 +123,15 @@ function retrain(){
  if(!samples.length)sources=null;
  model=fitModel(train);recent=[];estimate=null;
  const counts={};for(const s of samples)(counts[s.session]??={})[s.y]=(counts[s.session][s.y]||0)+1;
- $('counts').textContent=samples.length?Object.entries(counts).map(([session,c])=>`${session}: ${Object.entries(c).map(([l,n])=>`${movementName(l)} ${n}`).join(', ')}`).join(' — '):'No windows recorded yet.';
+ const posed=samples.filter(s=>s.pose).length;
+ $('counts').textContent=samples.length?Object.entries(counts).map(([session,c])=>`${session}: ${Object.entries(c).map(([l,n])=>`${movementName(l)} ${n}`).join(', ')}`).join(' — ')+(posed?` · ${posed} with camera motion`:''):'No windows recorded yet.';
  $('model-state').textContent=model?`Trained · ${train.length} windows · ${sourceList(sources)}`:'Not trained';
  const scores=$('scores');scores.replaceChildren();if(!model)return;
  const result=evaluate(model,test),lor=leaveOneRoundOut(train),line=text=>{const p=document.createElement('p');p.textContent=text;scores.append(p);};
  if(lor!=null)line(`Leave-one-round-out: ${Math.round(lor*100)}% (chance ${Math.round(100/model.labels.length)}%)`);
  if(!result)return line('Record a test round for an honest accuracy score.');
  line(`Test round: ${Math.round(result.acc*100)}% of ${result.n} windows correct`);
+ if(result.pose)line(`Posture vs. camera teacher: ${Math.round(result.pose.error*100)} cm per joint over ${result.pose.n} windows (always guessing the average taught pose: ${Math.round(result.pose.baseline*100)} cm)`);
  const table=document.createElement('table'),labels=Object.keys(result.confusion);
  table.innerHTML=`<caption>Rows: what you did · columns: what the radio guessed</caption><tr><th></th>${labels.map(l=>`<th>${movementName(l).slice(0,4)}</th>`).join('')}<th>✓</th></tr>`+labels.filter(l=>result.per[l]!=null).map(l=>`<tr><th>${movementName(l)}</th>${labels.map(q=>`<td class="${l===q?'hit':''}">${result.confusion[l][q]||''}</td>`).join('')}<td>${Math.round(result.per[l]*100)}%</td></tr>`).join('');
  scores.append(table);
@@ -135,8 +142,8 @@ $('save-data').onclick=()=>{if(!samples.length)return notice('Nothing recorded y
 $('load-data').onchange=async e=>{
  try{const data=JSON.parse(await e.target.files[0].text());
  if(data.format!=='bluebod-training-v2'||!Array.isArray(data.sources)||!data.sources.length||!data.sources.every(s=>s in FEATURES)||new Set(data.sources).size!==data.sources.length||!Array.isArray(data.samples))throw Error('Not a BlueBod radio training file. Files from the ESP32 CSI version cannot be loaded.');
- const size=data.sources.reduce((n,s)=>n+FEATURES[s],0);if(!data.samples.every(s=>Array.isArray(s.x)&&s.x.length===size&&s.x.every(Number.isFinite)&&MOVEMENTS.some(m=>m.id===s.y)))throw Error('Training file has malformed windows or unknown movements.');
- sources=data.sources;samples=data.samples.map(s=>({x:Float32Array.from(s.x),y:s.y,session:s.session==='test'?'test':'train',round:Number(s.round)||1}));
+ const size=data.sources.reduce((n,s)=>n+FEATURES[s],0);if(!data.samples.every(s=>Array.isArray(s.x)&&s.x.length===size&&s.x.every(Number.isFinite)&&MOVEMENTS.some(m=>m.id===s.y)&&(s.pose==null||validSequence(s.pose))))throw Error('Training file has malformed windows or unknown movements.');
+ sources=data.sources;samples=data.samples.map(s=>({x:Float32Array.from(s.x),y:s.y,session:s.session==='test'?'test':'train',round:Number(s.round)||1,pose:s.pose||undefined}));
  retrain();persist();notice(`Loaded ${samples.length} windows recorded with ${sourceList(sources)}.`);
  }catch(err){notice(err.message);}finally{e.target.value='';}
 };
@@ -158,15 +165,23 @@ setInterval(()=>{
  if(!x){estimate=null;$('prediction').hidden=true;if(model&&live.length&&!recorder)$('model-state').textContent=`Waiting for ${sourceList(sources)}`;return;}
  const p=predict(model,x);recent.push(p.probs);if(recent.length>4)recent.shift();
  const probs=Object.fromEntries(model.labels.map(l=>[l,recent.reduce((s,r)=>s+r[l],0)/recent.length])),best=model.labels.reduce((a,b)=>probs[b]>probs[a]?b:a);
- estimate={best,confidence:probs[best]};
+ estimate={best,confidence:probs[best],pose:p.best===best?p.pose:estimate?.best===best?estimate.pose:null};
  $('prediction').hidden=false;$('prediction-label').textContent=probs[best]>=.5?movementName(best):`Unsure · ${movementName(best)}?`;$('prediction-confidence').textContent=`${Math.round(probs[best]*100)}% of nearest windows`;
  record({type:'movement',time:Date.now(),movement:best,confidence:+probs[best].toFixed(2)});
 },500);
 
+// A taught motion plays through once (3 s) before switching to a newer match, unless the movement changes.
+let playing=null;
 function animateFigure(t){
- const badge=text=>{$('pose-badge').textContent=text;};
- if(recorder){const label=recorder.queue[recorder.index];badge('GUIDE');if(label==='nobody'){if(figure.mode!=='empty')figure.clear('Guide · leave the room');}else figure.update(templatePose(label,t),{mode:'guide',label:`Guide · ${movementName(label)}`});}
- else if(estimate){badge('RADIO ESTIMATE');if(estimate.best==='nobody'){if(figure.mode!=='empty')figure.clear('Radio estimate · nobody in the room');}else figure.update(templatePose(estimate.best,t),{mode:'radio',label:'Radio estimate · animated template of the predicted movement'});}
+ const badge=text=>{$('pose-badge').textContent=text;},teacher=cameraOn&&teacherLive&&performance.now()-teacherLive.t<500?teacherLive.pose:null;
+ if(recorder){const label=recorder.queue[recorder.index];
+ if(teacher&&label!=='nobody'){badge('TEACHER');figure.update(expandPose(teacher),{mode:'teacher',label:`Camera teacher · ${movementName(label)} · saved with each window`});}
+ else{badge('GUIDE');if(label==='nobody'){if(figure.mode!=='empty')figure.clear('Guide · leave the room');}else figure.update(templatePose(label,t),{mode:'guide',label:`Guide · ${movementName(label)}`});}}
+ else if(estimate){badge('RADIO ESTIMATE');
+ if(estimate.best==='nobody'){playing=null;if(figure.mode!=='empty')figure.clear('Radio estimate · nobody in the room');}
+ else if(estimate.pose){if(!playing||playing.label!==estimate.best||t-playing.start>=STEPS*STEP_MS)playing={seq:estimate.pose,label:estimate.best,start:t};figure.update(expandPose(poseAt(playing.seq,t-playing.start)),{mode:'radio',label:'Radio estimate · camera-taught motion of the closest training window'});}
+ else{playing=null;figure.update(templatePose(estimate.best,t),{mode:'radio',label:'Radio estimate · animated template of the predicted movement'});}}
+ else if(teacher){badge('CAMERA TEACHER');figure.update(expandPose(teacher),{mode:'teacher',label:'Camera teacher · shown for checking, never used for tracking'});}
  else if(figure.mode!=='reference'){badge('REFERENCE');figure.reset();}
  requestAnimationFrame(animateFigure);
 }
@@ -197,6 +212,62 @@ function renderSignals(){
 }
 renderSignals();
 
+// ---- Optional camera teacher: MediaPipe Pose runs on this device and video never leaves the page ----
+// It labels training windows with 3D motion and scores the radio's postures; live tracking never reads it.
+const EDGES=[[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28],[27,29],[29,31],[28,30],[30,32],[0,11],[0,12]];
+const landmarkers={};let landmarker=null,stream=null,cameraOn=false,busy=false,lastVideo=-1,lastFrame=0,fps=0,cameraStart=0,slowWarned=false,teacherFrames=[],teacherLive=null;
+function draw(points){
+ const canvas=$('overlay'),ctx=canvas.getContext('2d');canvas.width=canvas.clientWidth*devicePixelRatio;canvas.height=canvas.clientHeight*devicePixelRatio;ctx.clearRect(0,0,canvas.width,canvas.height);if(!points)return;
+ let w=canvas.width,h=canvas.height,ox=0,oy=0;const v=$('video');if(v.videoWidth){const s=Math.min(w/v.videoWidth,h/v.videoHeight);w=v.videoWidth*s;h=v.videoHeight*s;ox=(canvas.width-w)/2;oy=(canvas.height-h)/2;}
+ ctx.strokeStyle='#91b5ff';ctx.lineWidth=3*devicePixelRatio;ctx.shadowColor='#81aaff';ctx.shadowBlur=10;
+ for(const [a,b] of EDGES){const p=points[a],q=points[b];if(!p||!q||(p.visibility??1)<.5||(q.visibility??1)<.5)continue;ctx.beginPath();ctx.moveTo(ox+p.x*w,oy+p.y*h);ctx.lineTo(ox+q.x*w,oy+q.y*h);ctx.stroke();}
+ for(const p of points){if((p.visibility??1)<.5)continue;ctx.beginPath();ctx.arc(ox+p.x*w,oy+p.y*h,3*devicePixelRatio,0,Math.PI*2);ctx.fillStyle='#d5e4ff';ctx.fill();}
+}
+async function loadTeacher(variant){
+ if(landmarkers[variant])return landmarkers[variant];
+ notice(`Loading the MediaPipe Pose ${variant} model (${variant==='heavy'?'30':'9'} MB) the first time. It runs on this device.`);
+ const {FilesetResolver,PoseLandmarker}=await import('./vendor/vision_bundle.mjs');
+ const files=await FilesetResolver.forVisionTasks(new URL('./vendor/wasm',import.meta.url).href);
+ const options=delegate=>({baseOptions:{modelAssetPath:new URL(`./models/pose_landmarker_${variant}.task`,import.meta.url).href,delegate},runningMode:'VIDEO',numPoses:1,minPoseDetectionConfidence:.6,minPosePresenceConfidence:.6,minTrackingConfidence:.6});
+ // The GPU delegate is several times faster; CPU covers browsers without WebGL.
+ try{landmarkers[variant]=await PoseLandmarker.createFromOptions(files,options('GPU'));}catch{landmarkers[variant]=await PoseLandmarker.createFromOptions(files,options('CPU'));}
+ return landmarkers[variant];
+}
+function stopCamera(){
+ cameraOn=false;teacherLive=null;teacherFrames=[];stream?.getTracks().forEach(t=>t.stop());stream=null;$('video').srcObject=null;draw();
+ $('empty').hidden=false;$('camera-stop').disabled=true;$('camera-start').disabled=false;$('capture-label').textContent='CAMERA OFF';$('tracking').textContent='Camera off';$('fps').textContent='— FPS';lastVideo=-1;lastFrame=0;fps=0;
+}
+async function startCamera(){
+ if(busy)return;busy=true;stopCamera();$('camera-start').disabled=true;$('teacher').open=true;
+ try{
+ if(!navigator.mediaDevices?.getUserMedia)throw Error('Camera access needs HTTPS or localhost.');
+ stream=await navigator.mediaDevices.getUserMedia({video:{width:1280,height:720,facingMode:'user'},audio:false});
+ $('video').srcObject=stream;await $('video').play();landmarker=await loadTeacher($('teacher-model').value);
+ cameraOn=true;cameraStart=performance.now();slowWarned=false;$('empty').hidden=true;$('camera-stop').disabled=false;
+ $('capture-label').textContent=`LIVE · MEDIAPIPE POSE ${$('teacher-model').value.toUpperCase()}`;notice('Camera teacher on. Recorded windows now carry your 3D motion; tracking stays radio-only.');nextFrame();
+ }catch(e){stopCamera();notice(e.name==='NotFoundError'?'No camera found on this device.':e.name==='NotAllowedError'?'Camera access was blocked. Allow it in the site settings to use the teacher.':e.message);}finally{busy=false;}
+}
+// One detection per new camera frame where the browser can tell us, else per display frame.
+const nextFrame=()=>{const video=$('video');if(video.requestVideoFrameCallback)video.requestVideoFrameCallback(teach);else requestAnimationFrame(teach);};
+function teach(){
+ if(!cameraOn)return;
+ try{
+ const video=$('video');
+ if(video.currentTime!==lastVideo){
+ lastVideo=video.currentTime;const now=performance.now(),result=landmarker.detectForVideo(video,now),points=result.landmarks[0],pose=compactPose(result.worldLandmarks[0]);
+ draw(points);teacherFrames.push({t:now,pose});while(teacherFrames[0].t<now-6000)teacherFrames.shift();if(pose)teacherLive={t:now,pose};
+ if(lastFrame)fps=fps?fps*.9+100/(now-lastFrame):1000/(now-lastFrame);lastFrame=now;$('fps').textContent=`${Math.round(fps)} FPS`;
+ $('tracking').textContent=pose?'Teaching · whole body seen':points?'Shoulders or hips hidden · not teaching':'Looking for a person';
+ // Each 0.25 s motion step needs a few frames; heavy can be too slow on older machines.
+ if(!slowWarned&&fps<12&&$('teacher-model').value==='heavy'&&now-cameraStart>6000){slowWarned=true;notice(`The heavy teacher runs at ${Math.round(fps)} FPS here. Choose the full model for smoother motion.`);}
+ }
+ nextFrame();
+ }catch(e){stopCamera();notice(`Camera teacher stopped: ${e.message}`);}
+}
+$('camera-start').onclick=startCamera;
+$('camera-stop').onclick=stopCamera;
+$('teacher-model').onchange=()=>{if(cameraOn)startCamera();};
+
 function download(name,data){const url=URL.createObjectURL(new Blob([JSON.stringify(data)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 $('export').onclick=()=>{if(!records.length)return notice('No data to export yet. Start sensing first.');download(`bluebod-${Date.now()}.json`,{format:'bluebod-v3',exportedAt:new Date().toISOString(),router,sources,description:'wifi: round-trip ms to the router (null = no answer); movement: k-NN estimate from radio features',frames:records});notice(`Exported ${records.length} records. The session retains the latest 18,000 records.`);};
-window.addEventListener('beforeunload',()=>{probing=false;bleScan?.stop();figure.destroy();});
+window.addEventListener('beforeunload',()=>{probing=false;bleScan?.stop();stream?.getTracks().forEach(t=>t.stop());figure.destroy();});

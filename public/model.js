@@ -1,4 +1,5 @@
 // k-nearest-neighbour movement model over standardised radio features, with honest scoring.
+import {meanPose,poseError} from './teacher.js';
 export function fitModel(samples,k=7){
  if(samples.length<10||new Set(samples.map(s=>s.y)).size<2)return null;
  const d=samples[0].x.length,mu=new Float32Array(d),sd=new Float32Array(d);
@@ -7,25 +8,35 @@ export function fitModel(samples,k=7){
  // The floor stops a feature that never varied in training (no lost probes, say) from swamping the distance.
  for(let j=0;j<d;j++)sd[j]=Math.max(.05,Math.sqrt(sd[j]));
  const Z=samples.map(s=>standardize(s.x,mu,sd));
- return {mu,sd,Z,y:samples.map(s=>s.y),labels:[...new Set(samples.map(s=>s.y))].sort(),k};
+ return {mu,sd,Z,y:samples.map(s=>s.y),poses:samples.map(s=>s.pose||null),labels:[...new Set(samples.map(s=>s.y))].sort(),k};
 }
 function standardize(x,mu,sd){const z=new Float32Array(x.length);for(let j=0;j<x.length;j++)z[j]=(x[j]-mu[j])/sd[j];return z;}
 
-// Returns label probabilities from the k nearest training windows.
+// Returns label probabilities from the k nearest training windows, plus the camera-taught motion of
+// the closest taught window of the winning label (whole sequences: averaging them would blur the motion away).
 export function predict(model,x){
  const z=standardize(x,model.mu,model.sd);
- const near=model.Z.map((r,i)=>{let d=0;for(let j=0;j<z.length;j++)d+=(r[j]-z[j])**2;return [d,i];}).sort((a,b)=>a[0]-b[0]).slice(0,model.k);
+ const ranked=model.Z.map((r,i)=>{let d=0;for(let j=0;j<z.length;j++)d+=(r[j]-z[j])**2;return [d,i];}).sort((a,b)=>a[0]-b[0]),near=ranked.slice(0,model.k);
  const probs=Object.fromEntries(model.labels.map(l=>[l,0]));for(const [,i] of near)probs[model.y[i]]+=1/near.length;
- return {best:model.labels.reduce((a,b)=>probs[b]>probs[a]?b:a),probs};
+ // Only some windows may have been recorded with the camera on, so look past the k nearest for one.
+ const best=model.labels.reduce((a,b)=>probs[b]>probs[a]?b:a),taught=ranked.find(([,i])=>model.y[i]===best&&model.poses[i]);
+ return {best,probs,pose:taught?model.poses[taught[1]]:null};
 }
 
 export function evaluate(model,samples){
  if(!model||!samples.length)return null;
  const labels=[...new Set([...model.labels,...samples.map(s=>s.y)])].sort();
  const confusion=Object.fromEntries(labels.map(l=>[l,Object.fromEntries(labels.map(q=>[q,0]))]));
- let hits=0;for(const s of samples){const p=predict(model,s.x).best;confusion[s.y][p]++;if(p===s.y)hits++;}
+ // Posture against the camera teacher: mean pose of the student's chosen window vs. the teacher's, per
+ // joint, next to always guessing the average taught pose.
+ const taught=model.poses.filter(Boolean),average=taught.length?meanPose(taught.map(meanPose)):null;
+ let hits=0,err=0,base=0,posed=0;
+ for(const s of samples){
+ const p=predict(model,s.x);confusion[s.y][p.best]++;if(p.best===s.y)hits++;
+ if(average&&s.pose&&p.pose){const truth=meanPose(s.pose);err+=poseError(meanPose(p.pose),truth);base+=poseError(average,truth);posed++;}
+ }
  const per=Object.fromEntries(labels.filter(l=>samples.some(s=>s.y===l)).map(l=>[l,confusion[l][l]/samples.filter(s=>s.y===l).length]));
- return {acc:hits/samples.length,n:samples.length,per,confusion};
+ return {acc:hits/samples.length,n:samples.length,per,confusion,pose:posed?{error:err/posed,baseline:base/posed,n:posed}:null};
 }
 
 // Each training round is predicted by a model that only saw the other rounds; scoring on random
