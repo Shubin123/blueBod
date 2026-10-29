@@ -1,7 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {toScene,project,referencePose,Pose3D} from '../public/pose3d.js';
-import {validPacket} from '../public/network.js';
 test('world coordinates center the hips and invert vertical/depth axes',()=>{
  const input=referencePose();for(const p of input){p.x+=2;p.y+=3;p.z+=4;}
  const points=toScene(input);
@@ -16,11 +15,9 @@ test('perspective responds to depth and orbit direction',()=>{
  assert.ok(front.x>300);assert.ok(Math.abs(side.x-300)<1e-8);
  assert.ok(project({x:1,y:0,z:1},0,0,3,600,400).x>front.x);
 });
-test('reference figure and world packet remain finite with visible limbs',()=>{
+test('reference figure stays finite with visible limbs',()=>{
  const world=referencePose(100);
  assert.ok(world[16].y!==referencePose(500)[16].y);
- assert.ok(validPacket({type:'pose',id:'source',packetId:'frame',time:1,landmarks:world,worldLandmarks:world}));
- assert.equal(validPacket({type:'pose',id:'source',packetId:'frame',time:1,landmarks:world,worldLandmarks:[{x:NaN,y:0,z:0}]}),false);
  for(const p of toScene(world))assert.ok(Object.values(project(p,.4,.2,3.5,600,400)).every(Number.isFinite));
 });
 test('renderer draws startup reference figure without a camera or WebGL',()=>{

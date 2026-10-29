@@ -1,12 +1,5 @@
-import {cp,mkdir,rm,writeFile} from 'node:fs/promises';
+import {cp,rm,writeFile} from 'node:fs/promises';
 await rm('dist',{recursive:true,force:true});
-await mkdir('dist/vendor',{recursive:true});
 await cp('public','dist',{recursive:true});
-await cp('node_modules/@mediapipe/tasks-vision/vision_bundle.mjs','dist/vendor/vision_bundle.mjs');
-await cp('node_modules/@mediapipe/tasks-vision/wasm','dist/vendor/wasm',{recursive:true});
-const response=await fetch('https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task');
-if(!response.ok)throw Error(`Model download failed: ${response.status}`);
-await mkdir('dist/models',{recursive:true});
-await writeFile('dist/models/pose_landmarker_lite.task',Buffer.from(await response.arrayBuffer()));
 await writeFile('dist/.nojekyll','');
 console.log('Static application built in dist/');
