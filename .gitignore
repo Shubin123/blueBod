@@ -2,3 +2,7 @@ node_modules/
 *.pem
 .env
 dist/
+.venv/
+/wimans/
+/rssi.json
+/poses.json

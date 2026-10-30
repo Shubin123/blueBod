@@ -1,11 +1,12 @@
 import {Pose3D} from './pose3d.js';
 import {ROUTERS,WINDOW,FEATURES,SOURCE_NAMES,cleanHost,findRouter,probe,RadioStore} from './radio.js';
 import {fitModel,predict,evaluate,leaveOneRoundOut} from './model.js';
+import {loadPrior,withPrior} from './prior.js';
 import {MOVEMENTS,movementName,templatePose} from './movements.js';
 import {STEPS,STEP_MS,compactPose,expandPose,teachWindow,validSequence,poseAt} from './teacher.js';
 const $=id=>document.getElementById(id);
 const store=new RadioStore();
-let records=[],samples=[],sources=null,model=null,recent=[],estimate=null,recorder=null;
+let records=[],samples=[],sources=null,model=null,recent=[],estimate=null,recorder=null,prior=null,untrained=null,liveModel=null;
 let router=null,probing=false,finding=false,lastAnswer=0,bleScan=null;const sensing=new Map(),bleNames=new Map();
 const figure=new Pose3D($('pose3d'),$('pose-state'));
 $('front-view').onclick=()=>figure.view(0,0);
@@ -121,16 +122,21 @@ $('record-stop').onclick=()=>stopRecording(false);
 function retrain(){
  const train=samples.filter(s=>s.session==='train'),test=samples.filter(s=>s.session==='test');
  if(!samples.length)sources=null;
- model=fitModel(train);recent=[];estimate=null;
+ // The WiMANS prior votes alongside these windows wherever they include Bluetooth, and otherwise still
+ // supplies recorded motion for the figure.
+ const fit=windows=>{const m=fitModel(windows);return m&&withPrior(m,prior,windows,sources);},plain=fitModel(train);
+ model=fit(train);recent=[];estimate=null;
  const counts={};for(const s of samples)(counts[s.session]??={})[s.y]=(counts[s.session][s.y]||0)+1;
  const posed=samples.filter(s=>s.pose).length;
  $('counts').textContent=samples.length?Object.entries(counts).map(([session,c])=>`${session}: ${Object.entries(c).map(([l,n])=>`${movementName(l)} ${n}`).join(', ')}`).join(' — ')+(posed?` · ${posed} with camera motion`:''):'No windows recorded yet.';
- $('model-state').textContent=model?`Trained · ${train.length} windows · ${sourceList(sources)}`:'Not trained';
+ $('model-state').textContent=model?`Trained · ${train.length} windows · ${sourceList(sources)}${model.prior?.probs?' + WiMANS prior':''}`:'Not trained';
  const scores=$('scores');scores.replaceChildren();if(!model)return;
- const result=evaluate(model,test),lor=leaveOneRoundOut(train),line=text=>{const p=document.createElement('p');p.textContent=text;scores.append(p);};
- if(lor!=null)line(`Leave-one-round-out: ${Math.round(lor*100)}% (chance ${Math.round(100/model.labels.length)}%)`);
+ const result=evaluate(model,test),lor=leaveOneRoundOut(train,fit),line=text=>{const p=document.createElement('p');p.textContent=text;scores.append(p);};
+ // Where the prior votes, the same scores without it show whether it helps in this room.
+ const voted=model.prior?.probs,without=v=>voted&&v!=null?` · without the WiMANS prior: ${Math.round(v*100)}%`:'';
+ if(lor!=null)line(`Leave-one-round-out: ${Math.round(lor*100)}% (chance ${Math.round(100/model.labels.length)}%)${without(voted&&leaveOneRoundOut(train))}`);
  if(!result)return line('Record a test round for an honest accuracy score.');
- line(`Test round: ${Math.round(result.acc*100)}% of ${result.n} windows correct`);
+ line(`Test round: ${Math.round(result.acc*100)}% of ${result.n} windows correct${without(voted&&evaluate(plain,test).acc)}`);
  if(result.pose)line(`Posture vs. camera teacher: ${Math.round(result.pose.error*100)} cm per joint over ${result.pose.n} windows (always guessing the average taught pose: ${Math.round(result.pose.baseline*100)} cm)`);
  const table=document.createElement('table'),labels=Object.keys(result.confusion);
  table.innerHTML=`<caption>Rows: what you did · columns: what the radio guessed</caption><tr><th></th>${labels.map(l=>`<th>${movementName(l).slice(0,4)}</th>`).join('')}<th>✓</th></tr>`+labels.filter(l=>result.per[l]!=null).map(l=>`<tr><th>${movementName(l)}</th>${labels.map(q=>`<td class="${l===q?'hit':''}">${result.confusion[l][q]||''}</td>`).join('')}<td>${Math.round(result.per[l]*100)}%</td></tr>`).join('');
@@ -151,6 +157,8 @@ function database(){return new Promise((resolve,reject)=>{const r=indexedDB.open
 async function persist(){try{(await database()).transaction('kv','readwrite').objectStore('kv').put({sources,samples},'radio-dataset');}catch{}}
 async function restore(){try{const req=(await database()).transaction('kv').objectStore('kv').get('radio-dataset');req.onsuccess=()=>{if(req.result?.samples?.length){({sources,samples}=req.result);retrain();notice(`Restored ${samples.length} recorded windows from this browser.`);}};}catch{}}
 restore();
+// Before any training, Bluetooth windows go to the WiMANS model as it is; trained models add it in retrain.
+loadPrior().then(p=>{prior=p;untrained=withPrior(null,p,[],['ble']);retrain();}).catch(e=>notice(`${e.message}. Training on the fly still works.`));
 
 // ---- Live estimate every 0.5 s from the last 3 s, averaged over the last 2 s of estimates ----
 setInterval(()=>{
@@ -161,12 +169,15 @@ setInterval(()=>{
  if(bleScan?.active)$('ble-state').textContent=`Scanning · ${devices} heard`;
  $('signal-empty').hidden=sensing.size>0;
  if(recorder)recordTick(now);
- const x=model&&sources?store.feature(sources,now):null;
+ const m=model||(untrained&&live.includes('ble')?untrained:null),x=m?store.feature(model?sources:['ble'],now):null;
+ if(m!==liveModel){liveModel=m;recent=[];if(!model)$('model-state').textContent=m?'Not trained here · WiMANS model on Bluetooth':'Not trained';}
  if(!x){estimate=null;$('prediction').hidden=true;if(model&&live.length&&!recorder)$('model-state').textContent=`Waiting for ${sourceList(sources)}`;return;}
- const p=predict(model,x);recent.push(p.probs);if(recent.length>4)recent.shift();
- const probs=Object.fromEntries(model.labels.map(l=>[l,recent.reduce((s,r)=>s+r[l],0)/recent.length])),best=model.labels.reduce((a,b)=>probs[b]>probs[a]?b:a);
- estimate={best,confidence:probs[best],pose:p.best===best?p.pose:estimate?.best===best?estimate.pose:null};
- $('prediction').hidden=false;$('prediction-label').textContent=probs[best]>=.5?movementName(best):`Unsure · ${movementName(best)}?`;$('prediction-confidence').textContent=`${Math.round(probs[best]*100)}% of nearest windows`;
+ const p=predict(m,x);recent.push(p.probs);if(recent.length>4)recent.shift();
+ const probs=Object.fromEntries(m.labels.map(l=>[l,recent.reduce((s,r)=>s+r[l],0)/recent.length])),best=m.labels.reduce((a,b)=>probs[b]>probs[a]?b:a);
+ // The motion follows the averaged movement, kept while it lasts so a playing motion isn't swapped mid-way.
+ if(estimate?.best!==best||p.best===best){const q=p.best===best?p:predict(m,x,best);estimate={best,pose:q.pose,poseSource:q.poseSource};}
+ $('prediction').hidden=false;$('prediction-label').textContent=probs[best]>=.5?movementName(best):`Unsure · ${movementName(best)}?`;
+ $('prediction-confidence').textContent=`${Math.round(probs[best]*100)}%${!model?' · WiMANS model, not trained here':m.prior?.probs?' · your windows × WiMANS':' of nearest windows'}`;
  record({type:'movement',time:Date.now(),movement:best,confidence:+probs[best].toFixed(2)});
 },500);
 
@@ -179,7 +190,7 @@ function animateFigure(t){
  else{badge('GUIDE');if(label==='nobody'){if(figure.mode!=='empty')figure.clear('Guide · leave the room');}else figure.update(templatePose(label,t),{mode:'guide',label:`Guide · ${movementName(label)}`});}}
  else if(estimate){badge('RADIO ESTIMATE');
  if(estimate.best==='nobody'){playing=null;if(figure.mode!=='empty')figure.clear('Radio estimate · nobody in the room');}
- else if(estimate.pose){if(!playing||playing.label!==estimate.best||t-playing.start>=STEPS*STEP_MS)playing={seq:estimate.pose,label:estimate.best,start:t};figure.update(expandPose(poseAt(playing.seq,t-playing.start)),{mode:'radio',label:'Radio estimate · camera-taught motion of the closest training window'});}
+ else if(estimate.pose){if(!playing||playing.label!==estimate.best||t-playing.start>=STEPS*STEP_MS)playing={seq:estimate.pose,label:estimate.best,start:t};figure.update(expandPose(poseAt(playing.seq,t-playing.start)),{mode:'radio',label:estimate.poseSource==='camera'?'Radio estimate · camera-taught motion of the closest training window':'Radio estimate · recorded WiMANS motion for this movement'});}
  else{playing=null;figure.update(templatePose(estimate.best,t),{mode:'radio',label:'Radio estimate · animated template of the predicted movement'});}}
  else if(teacher){badge('CAMERA TEACHER');figure.update(expandPose(teacher),{mode:'teacher',label:'Camera teacher · shown for checking, never used for tracking'});}
  else if(figure.mode!=='reference'){badge('REFERENCE');figure.reset();}

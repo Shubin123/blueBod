@@ -6,7 +6,7 @@ export const MOVEMENTS=[
  {id:'sitting',name:'Sitting',prompt:'Sit down and stay still'},
  {id:'squatting',name:'Squatting',prompt:'Squat up and down'},
  {id:'jumping',name:'Jumping',prompt:'Jump on the spot'},
- {id:'waving',name:'Waving',prompt:'Wave both arms above your head'},
+ {id:'waving',name:'Waving',prompt:'Wave one hand above your head'},
  {id:'spinning',name:'Spinning',prompt:'Turn slowly on the spot'},
  {id:'nobody',name:'Nobody',prompt:'Leave the room now'}
 ];
@@ -27,7 +27,7 @@ export function templatePose(id,time=0){
  if(id==='sitting'){legs=[[1.5,1.5],[1.5,1.5]];lean=.15;arms=[[.1,.5,.1,1.3],[.1,.5,.1,1.3]];}
  if(id==='squatting'){const d=.5-.5*Math.cos(t*2*Math.PI*.5);legs=[[1.4*d,2.3*d],[1.4*d,2.3*d]];lean=.5*d;arms=[[.1,1.3*d,.1,1.4*d],[.1,1.3*d,.1,1.4*d]];}
  if(id==='jumping'){const d=Math.max(0,Math.sin(t*2*Math.PI*1.1));legs=[[.5*(1-d),1*(1-d)],[.5*(1-d),1*(1-d)]];arms=[[.3+2*d,0,.3+2.2*d,0],[.3+2*d,0,.3+2.2*d,0]];}
- if(id==='waving'){const w=Math.sin(t*2*Math.PI*1.4)*.45;arms=[[2.4+w,0,2.9+w,0],[2.4-w,0,2.9-w,0]];}
+ if(id==='waving'){const w=Math.sin(t*2*Math.PI*1.4)*.45;arms[1]=[2.4-w,0,2.9-w,0];}
  if(id==='spinning')yaw=t*2*Math.PI/3;
  const p=Array.from({length:33},()=>({x:0,y:0,z:0,visibility:0}));
  const put=(i,v)=>{p[i]={...v,visibility:1};};
